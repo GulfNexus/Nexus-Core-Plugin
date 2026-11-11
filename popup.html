@@ -1,0 +1,149 @@
+const agentButtonId = 'nexus-ai-agent-button';
+const agentPanelId = 'nexus-ai-agent-panel';
+
+const ensurePanel = () => {
+  let panel = document.getElementById(agentPanelId);
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = agentPanelId;
+    panel.className = 'nexus-ai-agent-panel';
+    panel.innerHTML = `
+      <div class="nexus-ai-agent-header">
+        <span>Nexus AI</span>
+        <button type="button" class="nexus-close">✕</button>
+      </div>
+      <textarea id="nexus-ai-agent-input" placeholder="Ask about this page, or paste a task..."></textarea>
+      <div class="nexus-actions">
+        <button type="button" class="nexus-action" data-action="summarize">Summarize page</button>
+        <button type="button" class="nexus-action" data-action="answer">Ask AI</button>
+      </div>
+      <div id="nexus-ai-agent-result" class="nexus-result"></div>
+    `;
+
+    const closeButton = panel.querySelector('.nexus-close');
+    closeButton.addEventListener('click', () => panel.classList.remove('visible'));
+
+    panel.querySelector('[data-action="summarize"]').addEventListener('click', handleSummarize);
+    panel.querySelector('[data-action="answer"]').addEventListener('click', handleAsk);
+
+    document.body.appendChild(panel);
+  }
+
+  return panel;
+};
+
+const ensureButton = () => {
+  let button = document.getElementById(agentButtonId);
+  if (!button) {
+    button = document.createElement('button');
+    button.id = agentButtonId;
+    button.className = 'nexus-ai-agent-button';
+    button.type = 'button';
+    button.textContent = 'AI';
+    button.title = 'Open Nexus AI Agent';
+    button.addEventListener('click', () => {
+      const panel = ensurePanel();
+      panel.classList.toggle('visible');
+      const input = document.getElementById('nexus-ai-agent-input');
+      if (panel.classList.contains('visible')) input?.focus();
+    });
+    document.body.appendChild(button);
+  }
+  return button;
+};
+
+function buildPageContext() {
+  const title = document.title || 'This page';
+  const text = document.body?.innerText || '';
+  const summary = text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 4000);
+
+  return {
+    title,
+    summary,
+    url: window.location.href,
+  };
+}
+
+async function callAI(prompt) {
+  const settings = await chrome.storage.local.get({ apiKey: '', model: 'gpt-4o-mini', endpoint: 'https://api.openai.com/v1/chat/completions' });
+
+  if (!settings.apiKey) {
+    throw new Error('Add your API key in the extension popup before using AI features.');
+  }
+
+  const response = await fetch(settings.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      temperature: 0.3,
+      messages: [
+        { role: 'system', content: 'You are an AI assistant. Use the page context when present and answer directly.' },
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message || 'AI request failed.');
+  }
+
+  return data.choices?.[0]?.message?.content?.trim() || 'No response was returned.';
+}
+
+async function handleSummarize() {
+  const panel = ensurePanel();
+  const resultBox = document.getElementById('nexus-ai-agent-result');
+  const context = buildPageContext();
+  const prompt = `Summarize this page for me.\nTitle: ${context.title}\nURL: ${context.url}\nContent: ${context.summary}`;
+
+  resultBox.textContent = 'Generating summary...';
+
+  try {
+    const answer = await callAI(prompt);
+    resultBox.textContent = answer;
+  } catch (error) {
+    resultBox.textContent = error.message;
+  }
+}
+
+async function handleAsk() {
+  const panel = ensurePanel();
+  const input = document.getElementById('nexus-ai-agent-input');
+  const resultBox = document.getElementById('nexus-ai-agent-result');
+  const promptText = input?.value?.trim();
+
+  if (!promptText) {
+    resultBox.textContent = 'Type a question or task first.';
+    return;
+  }
+
+  const context = buildPageContext();
+  const prompt = `Page title: ${context.title}\nURL: ${context.url}\nPage content excerpt: ${context.summary}\n\nUser request: ${promptText}`;
+
+  resultBox.textContent = 'Thinking...';
+
+  try {
+    const answer = await callAI(prompt);
+    resultBox.textContent = answer;
+  } catch (error) {
+    resultBox.textContent = error.message;
+  }
+}
+
+function injectAgent() {
+  ensureButton();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', injectAgent);
+} else {
+  injectAgent();
+}

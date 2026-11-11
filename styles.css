@@ -1,0 +1,88 @@
+const STORAGE_DEFAULTS = {
+  apiKey: '',
+  model: 'gpt-4o-mini',
+  endpoint: 'https://api.openai.com/v1/chat/completions',
+};
+
+const apiKeyInput = document.getElementById('api-key');
+const modelInput = document.getElementById('model');
+const endpointInput = document.getElementById('endpoint');
+const resultNode = document.getElementById('result');
+
+async function loadSettings() {
+  const settings = await chrome.storage.local.get(STORAGE_DEFAULTS);
+  apiKeyInput.value = settings.apiKey || '';
+  modelInput.value = settings.model || 'gpt-4o-mini';
+  endpointInput.value = settings.endpoint || 'https://api.openai.com/v1/chat/completions';
+}
+
+async function saveSettings() {
+  const payload = {
+    apiKey: apiKeyInput.value.trim(),
+    model: modelInput.value,
+    endpoint: endpointInput.value.trim(),
+  };
+
+  await chrome.storage.local.set(payload);
+  resultNode.textContent = 'Settings saved.';
+}
+
+async function summarizeCurrentPage() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    resultNode.textContent = 'No active tab found.';
+    return;
+  }
+
+  const settings = await chrome.storage.local.get(STORAGE_DEFAULTS);
+  if (!settings.apiKey) {
+    resultNode.textContent = 'Add an API key before using the AI assistant.';
+    return;
+  }
+
+  resultNode.textContent = 'Summarizing this page...';
+
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const text = document.body?.innerText || '';
+        return {
+          title: document.title || 'This page',
+          url: window.location.href,
+          text: text.replace(/\s+/g, ' ').trim().slice(0, 4000),
+        };
+      },
+    });
+
+    const prompt = `Summarize this page for me in a helpful way.\nTitle: ${result.title}\nURL: ${result.url}\nContent: ${result.text}`;
+
+    const response = await fetch(settings.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: prompt },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error?.message || 'AI request failed.');
+
+    resultNode.textContent = data.choices?.[0]?.message?.content?.trim() || 'No response was returned.';
+  } catch (error) {
+    resultNode.textContent = error.message;
+  }
+}
+
+document.getElementById('save-settings').addEventListener('click', saveSettings);
+document.getElementById('summarize-page').addEventListener('click', summarizeCurrentPage);
+
+loadSettings();
